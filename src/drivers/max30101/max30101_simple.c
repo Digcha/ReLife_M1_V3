@@ -34,13 +34,23 @@ LOG_MODULE_REGISTER(max30101_simple, LOG_LEVEL_INF);
 #define MAX_REG_PART_ID      0xFF
 
 #define AVG_SIZE             4
+#define IBI_HISTORY_SIZE     5
 #define SAMPLE_RATE_HZ       100
 #define MIN_IBI_MS           200
 #define MAX_IBI_MS           3000
+#define IBI_SHORT_REJECT_PCT 55
+#define IBI_LONG_REJECT_PCT  180
+#define IBI_SHORT_REJECT_MS  180
+#define IBI_LONG_REJECT_MS   350
+#define HR_STEP_MIN_X10      80
+#define HR_STEP_DIVISOR      6
 
 struct max_algorithm_state {
     int32_t avg_buf[AVG_SIZE];
+    int32_t ibi_history[IBI_HISTORY_SIZE];
     int avg_idx;
+    int ibi_hist_idx;
+    int ibi_hist_count;
     int32_t prev_sample;
     int32_t prev_prev_sample;
     int64_t last_beat_time;
@@ -65,6 +75,9 @@ struct max_algorithm_state {
 
 static const struct device *s_i2c;
 static bool s_ready;
+static int32_t s_last_stable_hr_x10;
+static int32_t s_last_stable_ibi_ms;
+static bool s_have_stable_hr;
 
 static int reg_write(uint8_t reg, uint8_t value)
 {
@@ -95,6 +108,67 @@ static uint8_t available_samples(void)
     return (wr - rd) & 0x1FU;
 }
 
+static int ibi_compare(const void *lhs, const void *rhs)
+{
+    const int32_t a = *(const int32_t *)lhs;
+    const int32_t b = *(const int32_t *)rhs;
+
+    if (a < b) {
+        return -1;
+    }
+    if (a > b) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static void ibi_history_push(struct max_algorithm_state *state, int32_t ibi_ms)
+{
+    state->ibi_history[state->ibi_hist_idx] = ibi_ms;
+    state->ibi_hist_idx = (state->ibi_hist_idx + 1) % IBI_HISTORY_SIZE;
+    if (state->ibi_hist_count < IBI_HISTORY_SIZE) {
+        state->ibi_hist_count++;
+    }
+}
+
+static int32_t ibi_history_median(const struct max_algorithm_state *state)
+{
+    int32_t sorted[IBI_HISTORY_SIZE];
+
+    if (state->ibi_hist_count <= 0) {
+        return 0;
+    }
+
+    memcpy(sorted, state->ibi_history, (size_t)state->ibi_hist_count * sizeof(sorted[0]));
+    qsort(sorted, (size_t)state->ibi_hist_count, sizeof(sorted[0]), ibi_compare);
+    return sorted[state->ibi_hist_count / 2];
+}
+
+static bool ibi_candidate_is_short_outlier(const struct max_algorithm_state *state, int32_t ibi_ms)
+{
+    const int32_t reference_ms = ibi_history_median(state);
+
+    if (reference_ms <= 0) {
+        return false;
+    }
+
+    return (ibi_ms < ((reference_ms * IBI_SHORT_REJECT_PCT) / 100)) &&
+           ((reference_ms - ibi_ms) > IBI_SHORT_REJECT_MS);
+}
+
+static bool ibi_candidate_is_long_outlier(const struct max_algorithm_state *state, int32_t ibi_ms)
+{
+    const int32_t reference_ms = ibi_history_median(state);
+
+    if (reference_ms <= 0) {
+        return false;
+    }
+
+    return (ibi_ms > ((reference_ms * IBI_LONG_REJECT_PCT) / 100)) &&
+           ((ibi_ms - reference_ms) > IBI_LONG_REJECT_MS);
+}
+
 static void algorithm_reset(struct max_algorithm_state *state)
 {
     memset(state, 0, sizeof(*state));
@@ -103,9 +177,17 @@ static void algorithm_reset(struct max_algorithm_state *state)
     state->ir_max = INT32_MIN;
     state->ir_min = INT32_MAX;
     state->peak_threshold = 500;
+
+    if (s_have_stable_hr && (s_last_stable_ibi_ms >= MIN_IBI_MS) && (s_last_stable_ibi_ms <= MAX_IBI_MS)) {
+        state->hr_smoothed_x10 = s_last_stable_hr_x10;
+        state->latest_hr = (uint8_t)CLAMP(s_last_stable_hr_x10 / 10, 30, 220);
+        for (int i = 0; i < 3; i++) {
+            ibi_history_push(state, s_last_stable_ibi_ms);
+        }
+    }
 }
 
-static bool process_beat_detection(struct max_algorithm_state *state, int32_t sample, int32_t *hr_out)
+static bool process_beat_detection(struct max_algorithm_state *state, int32_t sample, int32_t *ibi_out_ms)
 {
     const int64_t now = k_uptime_get();
     bool beat_detected = false;
@@ -129,9 +211,19 @@ static bool process_beat_detection(struct max_algorithm_state *state, int32_t sa
             goto update_levels;
         }
 
+        if (ibi_candidate_is_short_outlier(state, (int32_t)ibi)) {
+            goto update_levels;
+        }
+
+        if (ibi_candidate_is_long_outlier(state, (int32_t)ibi)) {
+            state->last_beat_time = now;
+            state->last_ibi_ms = 0;
+            goto update_levels;
+        }
+
         state->last_ibi_ms = (int32_t)ibi;
         state->last_beat_time = now;
-        *hr_out = 60000 / state->last_ibi_ms;
+        *ibi_out_ms = state->last_ibi_ms;
         beat_detected = true;
     }
 
@@ -178,7 +270,9 @@ static void process_spo2_slot(struct max_algorithm_state *state, uint32_t red, u
 
 static void process_ppg_slot(struct max_algorithm_state *state, uint32_t slot)
 {
-    int32_t hr = 0;
+    int32_t filtered_ibi_ms;
+    int32_t target_hr_x10;
+    int32_t max_step_x10;
     int32_t sum = 0;
     int32_t smoothed;
     int32_t ac;
@@ -193,17 +287,25 @@ static void process_ppg_slot(struct max_algorithm_state *state, uint32_t slot)
     state->dc_est = (state->dc_est * 31 + smoothed) / 32;
     ac = smoothed - state->dc_est;
 
-    if (process_beat_detection(state, -ac, &hr)) {
-        const int32_t hr_x10 = hr * 10;
+    if (process_beat_detection(state, -ac, &filtered_ibi_ms)) {
+        ibi_history_push(state, filtered_ibi_ms);
+        filtered_ibi_ms = ibi_history_median(state);
+        target_hr_x10 = (60000 * 10) / MAX(filtered_ibi_ms, 1);
 
         if (state->hr_smoothed_x10 == 0) {
-            state->hr_smoothed_x10 = hr_x10;
+            state->hr_smoothed_x10 = target_hr_x10;
         } else {
-            state->hr_smoothed_x10 = (2 * hr_x10 + 8 * state->hr_smoothed_x10) / 10;
+            max_step_x10 = MAX(HR_STEP_MIN_X10, state->hr_smoothed_x10 / HR_STEP_DIVISOR);
+            target_hr_x10 = CLAMP(target_hr_x10,
+                                  state->hr_smoothed_x10 - max_step_x10,
+                                  state->hr_smoothed_x10 + max_step_x10);
+            state->hr_smoothed_x10 = (3 * target_hr_x10 + 7 * state->hr_smoothed_x10) / 10;
         }
 
-        state->latest_hr = (uint8_t)CLAMP(state->hr_smoothed_x10 / 10, 30, 220);
-        state->hr_valid = true;
+        if (state->ibi_hist_count >= 2) {
+            state->latest_hr = (uint8_t)CLAMP(state->hr_smoothed_x10 / 10, 30, 220);
+            state->hr_valid = true;
+        }
         state->beat_count_spo2++;
 
         if (state->beat_count_spo2 >= 8) {
@@ -339,6 +441,12 @@ int max30101_simple_capture(uint8_t *heart_rate_bpm, bool *hr_valid, uint8_t *sp
     *spo2_percent = state.latest_spo2;
     *hr_valid = state.hr_valid;
     *spo2_valid = state.spo2_valid;
+
+    if (state.hr_valid && (state.last_ibi_ms >= MIN_IBI_MS) && (state.last_ibi_ms <= MAX_IBI_MS)) {
+        s_last_stable_hr_x10 = state.hr_smoothed_x10;
+        s_last_stable_ibi_ms = state.last_ibi_ms;
+        s_have_stable_hr = true;
+    }
 
     return (state.hr_valid || state.spo2_valid) ? 0 : -ENODATA;
 }
