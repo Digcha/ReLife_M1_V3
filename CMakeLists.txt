@@ -3,11 +3,19 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(ReLife_M1_V3)
 
+string(TIMESTAMP RELIFE_BUILD_UNIX "%s" UTC)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/relife_build_time.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/relife_build_time.h
+    @ONLY
+)
+
 target_include_directories(app PRIVATE
     include
     include/bma400
     include/mlx90632
     src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
 target_sources(app PRIVATE

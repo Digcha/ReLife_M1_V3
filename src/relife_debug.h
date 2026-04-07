@@ -17,6 +17,8 @@ int relife_debug_get_latest_record(struct relife_record_wire *record);
 int relife_debug_get_record_by_id(uint32_t record_id, struct relife_record_wire *record);
 void relife_debug_get_status(struct relife_status_wire *status);
 void relife_debug_get_bt_state(struct relife_bt_debug_state *state);
+bool relife_debug_get_measure_max_mode(void);
+void relife_debug_set_measure_max_mode(bool enabled);
 
 int relife_debug_read_rtc(uint32_t *unix_time, bool *ready, bool *valid_time);
 int relife_debug_set_rtc(uint32_t unix_time);

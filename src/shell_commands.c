@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdlib.h>
 
 #include <zephyr/shell/shell.h>
@@ -167,6 +168,7 @@ static int cmd_hilfe(const struct shell *shell, size_t argc, char **argv)
     shell_print(shell, "  schritte      - BMA400 live + letzter FRAM-Wert");
     shell_print(shell, "  temperatur    - MLX90632 live + letzter FRAM-Wert");
     shell_print(shell, "  puls          - MAX30101 live + letzter FRAM-Wert");
+    shell_print(shell, "  mess_max      - Messung auf maximale Record-Rate stellen");
     shell_print(shell, "  fram_info     - FRAM-Zustand und Anzahl Records");
     shell_print(shell, "  fram_letzter  - letzten gespeicherten Record zeigen");
     shell_print(shell, "  bt_status     - BLE-Verbindung und Notify-Status");
@@ -221,6 +223,7 @@ static int cmd_status(const struct shell *shell, size_t argc, char **argv)
                 bool_text(max30101_simple_is_ready()),
                 bool_text(mlx90632_simple_is_ready()),
                 bool_text(fram_drv_is_ready()));
+    shell_print(shell, "Messmodus: max=%s", bool_text(relife_debug_get_measure_max_mode()));
 
     if (meta_err == 0) {
         if (meta.count == 0U) {
@@ -243,15 +246,65 @@ static int cmd_status(const struct shell *shell, size_t argc, char **argv)
         shell_print(shell, "FRAM-Metadaten nicht verfuegbar (%d)", meta_err);
     }
 
-    if (!rv3028_has_valid_time()) {
+    if (status.error_code == RELIFE_ERROR_RTC) {
+        shell_print(shell, "Hinweis: Die App sollte per RTC_SYNC eine aktuelle Unix-Zeit an das Board senden.");
+    } else if (!rv3028_has_valid_time()) {
         print_empty_storage_hint(shell);
     }
 
     return 0;
 }
 
+static int cmd_mess_max(const struct shell *shell, size_t argc, char **argv)
+{
+    bool enabled = relife_debug_get_measure_max_mode();
+
+    if (argc == 1) {
+        shell_print(shell, "Messung max: %s", enabled ? "aktiv" : "aus");
+        shell_print(shell, "Verwendung: mess_max <an|aus|status>");
+        return 0;
+    }
+
+    if (argc != 2) {
+        shell_error(shell, "Verwendung: mess_max <an|aus|status>");
+        return -EINVAL;
+    }
+
+    if ((strcmp(argv[1], "status") == 0) || (strcmp(argv[1], "?") == 0)) {
+        shell_print(shell, "Messung max: %s", enabled ? "aktiv" : "aus");
+        if (enabled) {
+            shell_print(shell, "Das Board speichert jetzt so schnell wie die Sensorpipeline es hergibt.");
+            shell_print(shell, "Die praktische Grenze ist vor allem das MAX30101-Capture von rund 8 Sekunden.");
+        } else {
+            shell_print(shell, "Die normale dynamische Messlogik ist aktiv.");
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "an") == 0) {
+        relife_debug_set_measure_max_mode(true);
+        shell_print(shell, "Max-Messmodus aktiviert.");
+        shell_print(shell, "Neue Records kommen jetzt mit maximaler sinnvoller Rate.");
+        shell_print(shell, "Praktisch sind das meist etwa alle 8 bis 10 Sekunden.");
+        shell_print(shell, "Hinweis: FRAM fuellt sich damit deutlich schneller.");
+        return 0;
+    }
+
+    if (strcmp(argv[1], "aus") == 0) {
+        relife_debug_set_measure_max_mode(false);
+        shell_print(shell, "Max-Messmodus deaktiviert.");
+        shell_print(shell, "Die normale dynamische Messlogik ist wieder aktiv.");
+        return 0;
+    }
+
+    shell_error(shell, "Unbekannter Wert: %s", argv[1]);
+    shell_print(shell, "Verwendung: mess_max <an|aus|status>");
+    return -EINVAL;
+}
+
 static int cmd_zeit(const struct shell *shell, size_t argc, char **argv)
 {
+    struct relife_status_wire status = { 0 };
     struct relife_storage_meta meta = { 0 };
     struct relife_record_wire latest = { 0 };
     bool ready = false;
@@ -263,6 +316,7 @@ static int cmd_zeit(const struct shell *shell, size_t argc, char **argv)
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
+    relife_debug_get_status(&status);
     err = relife_debug_read_rtc(&unix_time, &ready, &valid);
     shell_print(shell, "RTC: bereit=%s, gueltig=%s", bool_text(ready), bool_text(valid));
     if (err == 0) {
@@ -288,6 +342,10 @@ static int cmd_zeit(const struct shell *shell, size_t argc, char **argv)
                     bool_text((latest.flags & RELIFE_FLAG_RTC_VALID) != 0U));
     } else {
         print_no_record(shell, latest_err);
+    }
+
+    if (status.error_code == RELIFE_ERROR_RTC) {
+        shell_print(shell, "Hinweis: Die App sollte per RTC_SYNC eine aktuelle Unix-Zeit senden.");
     }
 
     return 0;
@@ -711,6 +769,7 @@ SHELL_CMD_REGISTER(zeit_setzen, NULL, "RTC setzen: zeit_setzen <unix>", cmd_zeit
 SHELL_CMD_REGISTER(schritte, NULL, "BMA400 Schritte live lesen und gespeicherten Wert anzeigen", cmd_schritte);
 SHELL_CMD_REGISTER(temperatur, NULL, "MLX90632 live lesen und gespeicherten Wert anzeigen", cmd_temperatur);
 SHELL_CMD_REGISTER(puls, NULL, "MAX30101 live messen und gespeicherte HR/SpO2 anzeigen", cmd_puls);
+SHELL_CMD_REGISTER(mess_max, NULL, "Max-Messmodus: mess_max <an|aus|status>", cmd_mess_max);
 SHELL_CMD_REGISTER(fram_info, NULL, "FRAM-Metadaten und Ringpufferstatus anzeigen", cmd_fram_info);
 SHELL_CMD_REGISTER(fram_letzter, NULL, "Letzten gespeicherten FRAM-Record anzeigen", cmd_fram_letzter);
 SHELL_CMD_REGISTER(fram_record, NULL, "Einen bestimmten FRAM-Record lesen: fram_record <record_id>", cmd_fram_record);

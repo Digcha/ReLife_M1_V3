@@ -16,6 +16,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
 
+#include "relife_build_time.h"
 #include "relife_protocol.h"
 #include "relife_debug.h"
 #include "drivers/bma400/bma400_simple.h"
@@ -52,12 +53,27 @@ static enum relife_error_code g_error_code = RELIFE_ERROR_NONE;
 static uint32_t g_snapshot_end_id;
 static uint32_t g_sync_start_after_id;
 static bool g_sync_abort_requested;
+static bool g_rtc_sync_required;
+static bool g_measure_max_mode;
 
 static K_MUTEX_DEFINE(g_storage_lock);
 static K_MUTEX_DEFINE(g_bt_lock);
 static K_MUTEX_DEFINE(g_sensor_lock);
 static K_SEM_DEFINE(g_system_ready_sem, 0, 1);
 static K_SEM_DEFINE(g_sync_sem, 0, 1);
+
+struct relife_measure_schedule {
+    int64_t next_steps_ms;
+    int64_t next_temp_ms;
+    int64_t next_ppg_ms;
+    uint32_t last_steps_total;
+    int16_t last_temp_centi_c;
+    bool have_steps;
+    bool have_temp;
+};
+
+static int storage_persist_locked(void);
+static void relife_set_error(enum relife_error_code error_code);
 
 static uint16_t crc16_ccitt_false(const uint8_t *data, size_t len)
 {
@@ -87,6 +103,145 @@ static bool relife_record_crc_valid(const struct relife_record_wire *record)
 static void relife_finalize_record(struct relife_record_wire *record)
 {
     record->crc16 = crc16_ccitt_false((const uint8_t *)record, sizeof(*record) - sizeof(record->crc16));
+}
+
+static bool relife_bt_connected(void)
+{
+    bool connected;
+
+    k_mutex_lock(&g_bt_lock, K_FOREVER);
+    connected = (g_current_conn != NULL);
+    k_mutex_unlock(&g_bt_lock);
+
+    return connected;
+}
+
+static bool relife_measure_max_mode_enabled(void)
+{
+    return g_measure_max_mode;
+}
+
+static enum relife_error_code relife_status_error_code(void)
+{
+    if (g_error_code != RELIFE_ERROR_NONE) {
+        return g_error_code;
+    }
+
+    return g_rtc_sync_required ? RELIFE_ERROR_RTC : RELIFE_ERROR_NONE;
+}
+
+static int relife_set_rtc_time(uint32_t unix_time, bool authoritative_sync)
+{
+    int err;
+
+    if (!rv3028_is_ready()) {
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&g_sensor_lock, K_FOREVER);
+    err = rv3028_set_unix_time(unix_time);
+    k_mutex_unlock(&g_sensor_lock);
+    if (err) {
+        return err;
+    }
+
+    if (authoritative_sync) {
+        k_mutex_lock(&g_storage_lock, K_FOREVER);
+        g_storage_meta.last_rtc_sync_unix = unix_time;
+        if (g_storage_ready) {
+            err = storage_persist_locked();
+        } else {
+            err = 0;
+        }
+        k_mutex_unlock(&g_storage_lock);
+        if (err) {
+            return err;
+        }
+    }
+
+    g_rtc_sync_required = !authoritative_sync;
+    return 0;
+}
+
+static void relife_bootstrap_rtc_from_build_time(void)
+{
+    int err;
+
+    if (!rv3028_is_ready()) {
+        return;
+    }
+
+    if (rv3028_has_valid_time()) {
+        g_rtc_sync_required = false;
+        return;
+    }
+
+    err = relife_set_rtc_time((uint32_t)RELIFE_BUILD_UNIX_TIME, false);
+    if (err) {
+        g_rtc_sync_required = true;
+        relife_set_error(RELIFE_ERROR_RTC);
+        return;
+    }
+
+    LOG_INF("RTC bootstrapped from build timestamp %u", (uint32_t)RELIFE_BUILD_UNIX_TIME);
+}
+
+static int64_t relife_next_steps_interval_ms(uint32_t previous_steps, uint32_t current_steps, uint8_t activity)
+{
+    if (relife_measure_max_mode_enabled()) {
+        return 0;
+    }
+
+    if ((current_steps != previous_steps) || (activity != 0U)) {
+        return (int64_t)RELIFE_STEPS_ACTIVE_INTERVAL_SEC * MSEC_PER_SEC;
+    }
+
+    return (int64_t)RELIFE_STEPS_IDLE_INTERVAL_SEC * MSEC_PER_SEC;
+}
+
+static int64_t relife_next_temp_interval_ms(bool connected, bool have_previous_temp, int16_t previous_temp,
+                                            int16_t current_temp)
+{
+    if (relife_measure_max_mode_enabled()) {
+        return 0;
+    }
+
+    const int32_t delta =
+        have_previous_temp ? ((current_temp >= previous_temp) ? (current_temp - previous_temp)
+                                                              : (previous_temp - current_temp))
+                           : INT32_MAX;
+
+    if (connected || (delta >= RELIFE_TEMP_DELTA_CENTI_C)) {
+        return (int64_t)RELIFE_TEMP_FAST_INTERVAL_SEC * MSEC_PER_SEC;
+    }
+
+    return (int64_t)RELIFE_TEMP_IDLE_INTERVAL_SEC * MSEC_PER_SEC;
+}
+
+static int64_t relife_next_ppg_interval_ms(bool connected, bool hr_valid, bool spo2_valid)
+{
+    if (relife_measure_max_mode_enabled()) {
+        return 0;
+    }
+
+    if (connected) {
+        if (hr_valid && spo2_valid) {
+            return (int64_t)RELIFE_PPG_CONNECTED_VALID_INTERVAL_SEC * MSEC_PER_SEC;
+        }
+
+        return (int64_t)RELIFE_PPG_CONNECTED_RETRY_INTERVAL_SEC * MSEC_PER_SEC;
+    }
+
+    if (hr_valid && spo2_valid) {
+        return (int64_t)RELIFE_PPG_IDLE_VALID_INTERVAL_SEC * MSEC_PER_SEC;
+    }
+
+    return (int64_t)RELIFE_PPG_IDLE_RETRY_INTERVAL_SEC * MSEC_PER_SEC;
+}
+
+static int64_t relife_next_measure_deadline_ms(const struct relife_measure_schedule *schedule)
+{
+    return MIN(schedule->next_steps_ms, MIN(schedule->next_temp_ms, schedule->next_ppg_ms));
 }
 
 static uint32_t storage_slot_address(uint32_t slot_index)
@@ -327,7 +482,7 @@ static void relife_refresh_status_packet(void)
     memset(&g_status_packet, 0, sizeof(g_status_packet));
     g_status_packet.protocol_version = RELIFE_PROTOCOL_VERSION;
     g_status_packet.state = (uint8_t)g_sync_state;
-    g_status_packet.error_code = (uint8_t)g_error_code;
+    g_status_packet.error_code = (uint8_t)relife_status_error_code();
     g_status_packet.oldest_record_id = oldest;
     g_status_packet.newest_record_id = newest;
     g_status_packet.last_confirmed_id = last_confirmed;
@@ -448,6 +603,14 @@ static int start_sync_session(uint32_t last_local_id)
     }
     bt_conn_unref(conn);
 
+    if (g_rtc_sync_required || !rv3028_has_valid_time()) {
+        g_snapshot_end_id = 0U;
+        g_sync_state = RELIFE_SYNC_STATE_IDLE;
+        g_error_code = RELIFE_ERROR_NONE;
+        relife_notify_status();
+        return -EAGAIN;
+    }
+
     if ((newest_id == 0U) || (last_local_id >= newest_id)) {
         g_snapshot_end_id = 0U;
         g_sync_state = RELIFE_SYNC_STATE_IDLE;
@@ -529,16 +692,13 @@ static ssize_t relife_control_write(struct bt_conn *conn, const struct bt_gatt_a
         break;
 
     case RELIFE_OPCODE_RTC_SYNC:
-        err = rv3028_set_unix_time(value);
+        err = relife_set_rtc_time(value, true);
         if (err) {
             relife_set_error(RELIFE_ERROR_RTC);
         } else {
-            k_mutex_lock(&g_storage_lock, K_FOREVER);
-            g_storage_meta.last_rtc_sync_unix = value;
-            if (g_storage_ready) {
-                storage_persist_locked();
+            if (g_sync_state == RELIFE_SYNC_STATE_ERROR) {
+                g_sync_state = RELIFE_SYNC_STATE_IDLE;
             }
-            k_mutex_unlock(&g_storage_lock);
             g_error_code = RELIFE_ERROR_NONE;
             relife_notify_status();
         }
@@ -693,10 +853,20 @@ static void sync_thread_fn(void *, void *, void *)
 
 static void measurement_thread_fn(void *, void *, void *)
 {
+    struct relife_measure_schedule schedule = { 0 };
+
     k_sem_take(&g_system_ready_sem, K_FOREVER);
     k_sleep(K_SECONDS(RELIFE_FIRST_MEASUREMENT_DELAY_SEC));
+    schedule.next_steps_ms = k_uptime_get();
+    schedule.next_temp_ms = schedule.next_steps_ms;
+    schedule.next_ppg_ms = schedule.next_steps_ms;
 
     for (;;) {
+        const int64_t now_ms = k_uptime_get();
+        const bool measure_max = relife_measure_max_mode_enabled();
+        const bool steps_due = now_ms >= schedule.next_steps_ms;
+        const bool temp_due = now_ms >= schedule.next_temp_ms;
+        const bool ppg_due = now_ms >= schedule.next_ppg_ms;
         struct relife_record_wire record = {
             .heart_rate_bpm = 0xFFU,
             .spo2_percent = 0xFFU,
@@ -713,17 +883,41 @@ static void measurement_thread_fn(void *, void *, void *)
         bool spo2_valid = false;
         int16_t temp_centi = INT16_MIN;
         bool any_value = false;
+        int sampled_due_count = 0;
+        int failed_due_count = 0;
+        bool connected = false;
 
         if (g_sync_state == RELIFE_SYNC_STATE_SYNCING) {
             k_sleep(K_SECONDS(5));
             continue;
         }
 
-        if (!g_storage_ready || !rv3028_is_ready() || !rv3028_has_valid_time()) {
+        if (!g_storage_ready || !rv3028_is_ready()) {
             k_sleep(K_SECONDS(15));
             continue;
         }
 
+        if (!rv3028_has_valid_time()) {
+            g_rtc_sync_required = true;
+            k_sleep(K_SECONDS(15));
+            continue;
+        }
+
+        if (!steps_due && !temp_due && !ppg_due) {
+            if (measure_max) {
+                schedule.next_steps_ms = now_ms;
+                schedule.next_temp_ms = now_ms;
+                schedule.next_ppg_ms = now_ms;
+                continue;
+            }
+
+            const int64_t sleep_ms = CLAMP(relife_next_measure_deadline_ms(&schedule) - now_ms, 200LL, 5000LL);
+
+            k_sleep(K_MSEC((int32_t)sleep_ms));
+            continue;
+        }
+
+        connected = relife_bt_connected();
         k_mutex_lock(&g_sensor_lock, K_FOREVER);
 
         if (rv3028_get_unix_time(&timestamp)) {
@@ -736,49 +930,99 @@ static void measurement_thread_fn(void *, void *, void *)
         record.timestamp_unix = timestamp;
         record.flags |= RELIFE_FLAG_RTC_VALID;
 
-        if (!bma400_simple_get_steps(&steps_total, &activity)) {
-            ARG_UNUSED(activity);
-            record.steps_total = steps_total;
-            record.flags |= RELIFE_FLAG_STEPS_VALID;
-            any_value = true;
-        }
+        if (steps_due) {
+            if (!bma400_simple_get_steps(&steps_total, &activity)) {
+                const uint32_t previous_steps = schedule.have_steps ? schedule.last_steps_total : steps_total;
 
-        if (!mlx90632_simple_read_centi_degrees(&temp_centi)) {
-            record.skin_temp_centi_c = temp_centi;
-            record.flags |= RELIFE_FLAG_TEMP_VALID;
-            any_value = true;
-        }
-
-        if (!max30101_simple_capture(&hr, &hr_valid, &spo2, &spo2_valid)) {
-            if (hr_valid) {
-                record.heart_rate_bpm = hr;
-                record.flags |= RELIFE_FLAG_HR_VALID;
+                sampled_due_count++;
+                record.steps_total = steps_total;
+                record.flags |= RELIFE_FLAG_STEPS_VALID;
                 any_value = true;
+                schedule.next_steps_ms = now_ms + relife_next_steps_interval_ms(previous_steps, steps_total, activity);
+                schedule.last_steps_total = steps_total;
+                schedule.have_steps = true;
+            } else {
+                failed_due_count++;
+                schedule.next_steps_ms = now_ms + (measure_max ? 1000LL
+                                                               : ((int64_t)RELIFE_STEPS_ACTIVE_INTERVAL_SEC *
+                                                                  MSEC_PER_SEC));
             }
-            if (spo2_valid) {
-                record.spo2_percent = spo2;
-                record.flags |= RELIFE_FLAG_SPO2_VALID;
+        }
+
+        if (temp_due) {
+            if (!mlx90632_simple_read_centi_degrees(&temp_centi)) {
+                sampled_due_count++;
+                record.skin_temp_centi_c = temp_centi;
+                record.flags |= RELIFE_FLAG_TEMP_VALID;
                 any_value = true;
+                schedule.next_temp_ms =
+                    now_ms + relife_next_temp_interval_ms(connected, schedule.have_temp,
+                                                          schedule.last_temp_centi_c, temp_centi);
+                schedule.last_temp_centi_c = temp_centi;
+                schedule.have_temp = true;
+            } else {
+                failed_due_count++;
+                schedule.next_temp_ms = now_ms + (measure_max ? 1000LL
+                                                              : ((int64_t)RELIFE_TEMP_FAST_INTERVAL_SEC *
+                                                                 MSEC_PER_SEC));
+            }
+        }
+
+        if (ppg_due) {
+            const int ppg_err = max30101_simple_capture(&hr, &hr_valid, &spo2, &spo2_valid);
+
+            if (ppg_err == 0) {
+                sampled_due_count++;
+                if (hr_valid) {
+                    record.heart_rate_bpm = hr;
+                    record.flags |= RELIFE_FLAG_HR_VALID;
+                    any_value = true;
+                }
+                if (spo2_valid) {
+                    record.spo2_percent = spo2;
+                    record.flags |= RELIFE_FLAG_SPO2_VALID;
+                    any_value = true;
+                }
+            } else if (ppg_err == -ENODATA) {
+                sampled_due_count++;
+            } else {
+                failed_due_count++;
+            }
+
+            if (measure_max && (ppg_err != 0) && (ppg_err != -ENODATA)) {
+                schedule.next_ppg_ms = now_ms + 1000LL;
+            } else {
+                schedule.next_ppg_ms = now_ms + relife_next_ppg_interval_ms(connected, hr_valid, spo2_valid);
             }
         }
 
         k_mutex_unlock(&g_sensor_lock);
 
         if (!any_value) {
-            relife_set_error(RELIFE_ERROR_SENSOR);
-            k_sleep(K_SECONDS(RELIFE_MEASUREMENT_INTERVAL_SEC));
+            if ((failed_due_count > 0) && (sampled_due_count == 0)) {
+                relife_set_error(RELIFE_ERROR_SENSOR);
+            } else if (g_error_code == RELIFE_ERROR_SENSOR) {
+                g_error_code = RELIFE_ERROR_NONE;
+                if (g_sync_state == RELIFE_SYNC_STATE_ERROR) {
+                    g_sync_state = RELIFE_SYNC_STATE_IDLE;
+                }
+                relife_notify_status();
+            }
+
             continue;
         }
 
         if (storage_append_record(&record)) {
             relife_set_error(RELIFE_ERROR_STORAGE);
         } else {
+            if ((g_error_code == RELIFE_ERROR_SENSOR) || (g_error_code == RELIFE_ERROR_RTC) ||
+                (g_error_code == RELIFE_ERROR_STORAGE)) {
+                g_sync_state = RELIFE_SYNC_STATE_IDLE;
+            }
             g_error_code = RELIFE_ERROR_NONE;
             relife_refresh_status_packet();
             relife_notify_status();
         }
-
-        k_sleep(K_SECONDS(RELIFE_MEASUREMENT_INTERVAL_SEC));
     }
 }
 
@@ -827,6 +1071,8 @@ static void relife_system_init(void)
 
     if (rv3028_init()) {
         relife_set_error(RELIFE_ERROR_RTC);
+    } else {
+        relife_bootstrap_rtc_from_build_time();
     }
     if (bma400_simple_init()) {
         relife_set_error(RELIFE_ERROR_SENSOR);
@@ -932,6 +1178,17 @@ void relife_debug_get_bt_state(struct relife_bt_debug_state *state)
     k_mutex_unlock(&g_bt_lock);
 }
 
+bool relife_debug_get_measure_max_mode(void)
+{
+    return g_measure_max_mode;
+}
+
+void relife_debug_set_measure_max_mode(bool enabled)
+{
+    g_measure_max_mode = enabled;
+    LOG_INF("Measurement max mode %s", enabled ? "enabled" : "disabled");
+}
+
 int relife_debug_read_rtc(uint32_t *unix_time, bool *ready, bool *valid_time)
 {
     int err;
@@ -960,31 +1217,15 @@ int relife_debug_set_rtc(uint32_t unix_time)
 {
     int err;
 
-    if (!rv3028_is_ready()) {
-        return -ENODEV;
-    }
-
-    k_mutex_lock(&g_sensor_lock, K_FOREVER);
-    err = rv3028_set_unix_time(unix_time);
-    k_mutex_unlock(&g_sensor_lock);
+    err = relife_set_rtc_time(unix_time, true);
     if (err) {
         relife_set_error(RELIFE_ERROR_RTC);
         return err;
     }
 
-    k_mutex_lock(&g_storage_lock, K_FOREVER);
-    g_storage_meta.last_rtc_sync_unix = unix_time;
-    if (g_storage_ready) {
-        err = storage_persist_locked();
-    } else {
-        err = 0;
+    if (g_sync_state == RELIFE_SYNC_STATE_ERROR) {
+        g_sync_state = RELIFE_SYNC_STATE_IDLE;
     }
-    k_mutex_unlock(&g_storage_lock);
-    if (err) {
-        relife_set_error(RELIFE_ERROR_STORAGE);
-        return err;
-    }
-
     g_error_code = RELIFE_ERROR_NONE;
     relife_notify_status();
     return 0;
