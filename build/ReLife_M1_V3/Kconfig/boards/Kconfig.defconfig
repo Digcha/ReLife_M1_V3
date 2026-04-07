@@ -1,2 +1,0 @@
-# Load Zephyr board defconfig descriptions.
-osource "C:/v/nordic/MyBoards/boards/arm/boards/ReLife/relife_m1/Kconfig.defconfig"
