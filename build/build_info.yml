@@ -1,0 +1,27 @@
+cmake:
+  application:
+    source-dir: 'C:/ncs/v3.1.1/zephyr/share/sysbuild'
+  board:
+    name: 'relife_m1'
+    path:
+     - 'C:/v/nordic/MyBoards/boards/arm/boards/ReLife/relife_m1'
+    qualifiers: 'nrf5340/cpuapp'
+    revision: ''
+  images:
+   - name: 'ReLife_M1_V3'
+     source-dir: 'C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3'
+     type: 'MAIN'
+   - name: 'hci_ipc'
+     source-dir: ''
+  kconfig:
+    files:
+     - 'C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/empty.conf'
+     - 'c:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/sysbuild.conf'
+    user-files:
+     - 'c:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/sysbuild.conf'
+  sysbuild: 'true'
+version: '0.1.0'
+west:
+  command: 'C:\ncs\toolchains\c1a76fddb2\opt\bin\Scripts\west build --build-dir c:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build c:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3 --pristine --board relife_m1/nrf5340/cpuapp -- -DDEBUG_THREAD_INFO=On -DCONFIG_DEBUG_THREAD_INFO=y -DReLife_M1_V3_DEBUG_THREAD_INFO=On -Dhci_ipc_DEBUG_THREAD_INFO=Off -DBOARD_ROOT=c:/v/nordic/myboards'
+  topdir: 'c:\ncs\v3.1.1'
+  version: '1.4.0'

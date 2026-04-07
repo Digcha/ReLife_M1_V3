@@ -1,0 +1,13 @@
+/ {
+    chosen {
+        zephyr,bt-hci-ipc = &ipc0;   /* hci_ipc sample braucht das */
+    };
+};
+
+&ipc0 {
+    status = "okay";
+};
+
+&mbox {
+    status = "okay";
+};

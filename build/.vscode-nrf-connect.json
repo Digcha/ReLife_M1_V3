@@ -1,0 +1,18 @@
+{
+  "toolchainPath": "c:\\ncs\\toolchains\\c1a76fddb2",
+  "sdkPath": "c:\\ncs\\v3.1.1",
+  "board": "relife_m1/nrf5340/cpuapp",
+  "boardDir": "c:\\v\\nordic\\MyBoards\\boards\\arm\\boards\\ReLife\\relife_m1",
+  "boardDirs": [
+    "c:\\v\\nordic\\MyBoards\\boards\\arm\\boards\\ReLife\\relife_m1"
+  ],
+  "optimizations": "none",
+  "cmakeArgs": [],
+  "confFiles": [],
+  "buildDirectory": "build",
+  "kconfigFragments": [],
+  "snippets": [],
+  "dtcOverlays": [],
+  "extraDtcOverlays": [],
+  "boardRoot": "c:\\v\\nordic\\MyBoards"
+}

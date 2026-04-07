@@ -1,0 +1,13 @@
+# Target labels
+ hci_ipc
+# Source files and their labels
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/CMakeFiles/hci_ipc
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/CMakeFiles/hci_ipc.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/CMakeFiles/hci_ipc-complete.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-build.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-configure.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-download.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-install.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-mkdir.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-patch.rule
+C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/modules/nrf/hci_ipc-prefix/src/hci_ipc-stamp/hci_ipc-update.rule

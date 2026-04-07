@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/CMakeFiles/ReLife_M1_V3"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/CMakeFiles/ReLife_M1_V3.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/CMakeFiles/ReLife_M1_V3-complete.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-build.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-configure.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-download.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-install.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-mkdir.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-patch.rule"
+		},
+		{
+			"file" : "C:/Users/Dimitar/Downloads/ReLife_M1_V3/ReLife_M1_V3/build/_sysbuild/sysbuild/images/ReLife_M1_V3-prefix/src/ReLife_M1_V3-stamp/ReLife_M1_V3-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"ReLife_M1_V3"
+		],
+		"name" : "ReLife_M1_V3"
+	}
+}
