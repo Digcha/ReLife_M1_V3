@@ -54,7 +54,7 @@ static uint32_t g_snapshot_end_id;
 static uint32_t g_sync_start_after_id;
 static bool g_sync_abort_requested;
 static bool g_rtc_sync_required;
-static bool g_measure_max_mode;
+static bool g_measure_max_mode = true;
 
 static K_MUTEX_DEFINE(g_storage_lock);
 static K_MUTEX_DEFINE(g_bt_lock);
